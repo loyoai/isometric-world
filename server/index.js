@@ -9,8 +9,8 @@ const dotenv = require('dotenv');
 dotenv.config({ path: path.resolve(__dirname, '..', '.env') });
 
 const MODEL_ID = 'fal-ai/flux-kontext-lora';
-const PROMPT = 'fill in the blank area on the right';
-const LORA_URL = 'https://v3.fal.media/files/monkey/o8_EQPk4RJRPeCSQjuCtZ_adapter_model.safetensors';
+const PROMPT = 'fill in the blank area';
+const LORA_URL = 'https://v3.fal.media/files/elephant/m0POB_Ptb3U0o5Lmg10P1_adapter_model.safetensors';
 const NUM_INFERENCE_STEPS = 30;
 const RESOLUTION_MODE = '1:1';
 const ACCELERATION = 'none';
@@ -88,6 +88,45 @@ async function slideImageLeft(buffer) {
     .toBuffer();
 }
 
+async function slideImageRight(buffer) {
+  const image = sharp(buffer);
+  const metadata = await image.metadata();
+  const { width, height } = metadata;
+
+  if (!width || !height) {
+    throw new Error('Invalid image dimensions');
+  }
+
+  const col1End = Math.floor(width / 3);
+  const col2End = Math.floor((2 * width) / 3);
+  const leftWidth = col1End;
+  const rightWidth = width - col2End;
+
+  if (leftWidth <= 0 || rightWidth <= 0 || col2End <= col1End) {
+    throw new Error('Image width is too small to split into thirds');
+  }
+
+  const leftSlice = await image
+    .clone()
+    .extract({ left: 0, top: 0, width: leftWidth, height })
+    .png()
+    .toBuffer();
+
+  const middleSlice = await image
+    .clone()
+    .extract({ left: col1End, top: 0, width: col2End - col1End, height })
+    .png()
+    .toBuffer();
+
+  return createWhiteBackground(width, height)
+    .composite([
+      { input: leftSlice, left: rightWidth, top: 0 },
+      { input: middleSlice, left: rightWidth + leftWidth, top: 0 },
+    ])
+    .png()
+    .toBuffer();
+}
+
 async function extractRightThird(buffer) {
   const image = sharp(buffer);
   const metadata = await image.metadata();
@@ -106,6 +145,27 @@ async function extractRightThird(buffer) {
 
   return image
     .extract({ left: col2End, top: 0, width: thirdWidth, height })
+    .png()
+    .toBuffer();
+}
+
+async function extractLeftThird(buffer) {
+  const image = sharp(buffer);
+  const metadata = await image.metadata();
+  const { width, height } = metadata;
+
+  if (!width || !height) {
+    throw new Error('Invalid image dimensions');
+  }
+
+  const leftWidth = Math.floor(width / 3);
+
+  if (leftWidth <= 0) {
+    throw new Error('Failed to compute left third width');
+  }
+
+  return image
+    .extract({ left: 0, top: 0, width: leftWidth, height })
     .png()
     .toBuffer();
 }
@@ -147,6 +207,49 @@ async function appendColumn(baseBuffer, columnBuffer) {
     .composite([
       { input: baseBuffer, left: 0, top: 0 },
       { input: adjustedColumnBuffer, left: baseMeta.width, top: 0 },
+    ])
+    .png()
+    .toBuffer();
+}
+
+async function prependColumn(baseBuffer, columnBuffer) {
+  const baseImage = sharp(baseBuffer);
+  const columnImage = sharp(columnBuffer);
+
+  const [baseMeta, columnMeta] = await Promise.all([
+    baseImage.metadata(),
+    columnImage.metadata(),
+  ]);
+
+  if (!baseMeta.width || !baseMeta.height) {
+    throw new Error('Invalid base image dimensions');
+  }
+  if (!columnMeta.width || !columnMeta.height) {
+    throw new Error('Invalid column image dimensions');
+  }
+
+  let adjustedColumnBuffer = columnBuffer;
+  let adjustedColumnMeta = columnMeta;
+
+  if (columnMeta.height !== baseMeta.height) {
+    adjustedColumnBuffer = await columnImage
+      .resize({
+        width: columnMeta.width,
+        height: baseMeta.height,
+        fit: 'fill',
+      })
+      .png()
+      .toBuffer();
+    adjustedColumnMeta = await sharp(adjustedColumnBuffer).metadata();
+  }
+
+  const columnWidth = adjustedColumnMeta.width || 0;
+  const newWidth = columnWidth + baseMeta.width;
+
+  return createWhiteBackground(newWidth, baseMeta.height)
+    .composite([
+      { input: adjustedColumnBuffer, left: 0, top: 0 },
+      { input: baseBuffer, left: columnWidth, top: 0 },
     ])
     .png()
     .toBuffer();
@@ -215,30 +318,67 @@ async function callFal(slidBuffer, expectedSize) {
 
 async function extendSeed(buffer, iterations = ITERATIONS) {
   const seedBuffer = await ensureRgbPng(buffer);
-  let accumulatedBuffer = seedBuffer;
-  let contextBuffer = seedBuffer;
   const steps = [];
 
   const seedMeta = await sharp(seedBuffer).metadata();
   const expectedSize = { width: seedMeta.width || 0, height: seedMeta.height || 0 };
 
+  const rightColumns = [];
+  let rightContextBuffer = seedBuffer;
+  let rightAccumulated = seedBuffer;
+
   for (let index = 0; index < iterations; index += 1) {
-    const slidBuffer = await slideImageLeft(contextBuffer);
+    const slidBuffer = await slideImageLeft(rightContextBuffer);
     const falBuffer = await callFal(slidBuffer, expectedSize);
     const newColumnBuffer = await extractRightThird(falBuffer);
-    accumulatedBuffer = await appendColumn(accumulatedBuffer, newColumnBuffer);
-    contextBuffer = falBuffer;
+    rightAccumulated = await appendColumn(rightAccumulated, newColumnBuffer);
+    rightContextBuffer = falBuffer;
+    rightColumns.push(newColumnBuffer);
 
     steps.push({
-      iteration: index + 1,
+      iteration: steps.length + 1,
+      direction: 'right',
       slid: slidBuffer,
       fal: falBuffer,
       column: newColumnBuffer,
-      extended: accumulatedBuffer,
+      extended: rightAccumulated,
     });
   }
 
-  return { seed: seedBuffer, extended: accumulatedBuffer, steps };
+  const leftColumns = [];
+  let leftContextBuffer = seedBuffer;
+  let leftAccumulated = seedBuffer;
+
+  for (let index = 0; index < iterations; index += 1) {
+    const slidBuffer = await slideImageRight(leftContextBuffer);
+    const falBuffer = await callFal(slidBuffer, expectedSize);
+    const newColumnBuffer = await extractLeftThird(falBuffer);
+    leftAccumulated = await prependColumn(leftAccumulated, newColumnBuffer);
+    leftContextBuffer = falBuffer;
+    leftColumns.unshift(newColumnBuffer);
+
+    steps.push({
+      iteration: steps.length + 1,
+      direction: 'left',
+      slid: slidBuffer,
+      fal: falBuffer,
+      column: newColumnBuffer,
+      extended: leftAccumulated,
+    });
+  }
+
+  let finalBuffer = leftAccumulated;
+  for (const columnBuffer of rightColumns) {
+    finalBuffer = await appendColumn(finalBuffer, columnBuffer);
+  }
+
+  const leftMeta = await sharp(leftAccumulated).metadata();
+  const leftExtensionWidth = Math.max(
+    0,
+    (leftMeta.width || 0) - (seedMeta.width || 0),
+  );
+
+  return { seed: seedBuffer, extended: finalBuffer, steps, leftExtensionWidth };
 }
 
 function toDataUrl(buffer, mime = 'image/png') {
@@ -268,9 +408,11 @@ app.post('/api/extend', upload.single('seed'), async (req, res) => {
         width: extendedMeta.width,
         height: extendedMeta.height,
         image: toDataUrl(result.extended),
+        seedOffset: result.leftExtensionWidth,
       },
       steps: result.steps.map((step) => ({
         iteration: step.iteration,
+        direction: step.direction,
         slid: toDataUrl(step.slid),
         fal: toDataUrl(step.fal),
         column: toDataUrl(step.column),

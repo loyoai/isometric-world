@@ -1,13 +1,6 @@
 import { useEffect, useMemo, useState } from 'react';
 import './App.css';
 
-const MAX_VIEWPORT_WIDTH = 640;
-const ISO_VERTICAL_RATIO = 0.22;
-
-function clamp(value, min, max) {
-  return Math.min(Math.max(value, min), max);
-}
-
 function loadImageInfo(dataUrl) {
   return new Promise((resolve) => {
     const img = new Image();
@@ -17,40 +10,15 @@ function loadImageInfo(dataUrl) {
   });
 }
 
-function useKeyboardNavigation(enabled, step, maxOffset, setOffset) {
-  useEffect(() => {
-    if (!enabled) {
-      return () => {};
-    }
-
-    function handleKeyDown(event) {
-      if (event.key === 'ArrowLeft' || event.key === 'ArrowRight') {
-        event.preventDefault();
-      }
-
-      if (event.key === 'ArrowLeft') {
-        setOffset((prev) => clamp(prev - step, 0, maxOffset));
-      }
-
-      if (event.key === 'ArrowRight') {
-        setOffset((prev) => clamp(prev + step, 0, maxOffset));
-      }
-    }
-
-    window.addEventListener('keydown', handleKeyDown);
-    return () => window.removeEventListener('keydown', handleKeyDown);
-  }, [enabled, step, maxOffset, setOffset]);
-}
-
 function App() {
   const [seedFile, setSeedFile] = useState(null);
   const [seedPreview, setSeedPreview] = useState(null);
   const [serverSeed, setServerSeed] = useState(null);
   const [extended, setExtended] = useState(null);
-  const [steps, setSteps] = useState([]);
+  const [, setSteps] = useState([]);
+  const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [offset, setOffset] = useState(0);
 
   useEffect(() => {
     if (!seedFile) {
@@ -67,53 +35,50 @@ function App() {
     reader.readAsDataURL(seedFile);
   }, [seedFile]);
 
-  useEffect(() => {
-    setOffset(0);
-  }, [extended]);
+  const canvasImage = useMemo(() => {
+    if (extended?.image) {
+      return extended.image;
+    }
+    if (serverSeed?.image) {
+      return serverSeed.image;
+    }
+    if (seedPreview?.image) {
+      return seedPreview.image;
+    }
+    return null;
+  }, [extended, serverSeed, seedPreview]);
 
-  const viewport = useMemo(() => {
-    const src = serverSeed || seedPreview;
-    if (!src || !src.width || !src.height) {
+  const statusMessage = useMemo(() => {
+    if (isLoading) {
+      return 'Summoning new terrain via FAL…';
+    }
+    if (error) {
+      return error;
+    }
+    if (!canvasImage) {
       return null;
     }
-
-    const scale = Math.min(1, MAX_VIEWPORT_WIDTH / src.width);
-    return {
-      width: src.width,
-      height: src.height,
-      displayWidth: src.width * scale,
-      displayHeight: src.height * scale,
-      scale,
-    };
-  }, [serverSeed, seedPreview]);
-
-  const maxOffset = useMemo(() => {
-    if (!extended || !viewport) {
-      return 0;
+    if (extended) {
+      return 'Use your new extended seed to inspire the next world.';
     }
-    return Math.max(0, extended.width - viewport.width);
-  }, [extended, viewport]);
-
-  const step = useMemo(() => {
-    if (!viewport) {
-      return 0;
-    }
-    return Math.max(1, Math.round(viewport.width / 12));
-  }, [viewport]);
-
-  useKeyboardNavigation(Boolean(extended && viewport), step, maxOffset, setOffset);
+    return 'Press Generate whenever you are ready.';
+  }, [canvasImage, error, extended, isLoading]);
 
   async function handleExtend(event) {
     event.preventDefault();
     setError('');
 
     if (!seedFile) {
-      setError('Choose a seed image first.');
+      setError('Attach a seed tile to extend the scene.');
       return;
     }
 
     const formData = new FormData();
     formData.append('seed', seedFile);
+
+    if (prompt.trim()) {
+      formData.append('prompt', prompt.trim());
+    }
 
     try {
       setIsLoading(true);
@@ -138,31 +103,39 @@ function App() {
     }
   }
 
-  const previewMessage = useMemo(() => {
-    if (isLoading) {
-      return 'Enhancing via FAL – this can take a moment...';
-    }
-    if (error) {
-      return error;
-    }
-    if (!extended) {
-      return 'Upload a seed image and click Extend to generate extra columns.';
-    }
-    return 'Use Left and Right arrow keys to slide across the extended scene.';
-  }, [isLoading, error, extended]);
-
-  const horizontalShift = viewport ? -offset * viewport.scale : 0;
-  const verticalShift = viewport ? offset * ISO_VERTICAL_RATIO * viewport.scale * -1 : 0;
-
   return (
     <div className="app">
+      <div className="app__background" aria-hidden="true" />
       <header className="app__header">
-        <h1>Isometric Extender</h1>
-        <p>Upload a square isometric tile, extend it with FAL, then explore using your keyboard.</p>
+        <img src="/logo.png" alt="Isometric Worlds" className="app__logo" />
       </header>
 
-      <form className="uploader" onSubmit={handleExtend}>
-        <label className="uploader__field">
+      <main className="app__main">
+        <section className="canvas" aria-label="Isometric preview">
+          <div className={canvasImage ? 'canvas__surface has-image' : 'canvas__surface'}>
+            <div className="canvas__grid" aria-hidden="true" />
+            {canvasImage ? (
+              <img src={canvasImage} alt="Isometric preview" className="canvas__image" />
+            ) : (
+              <div className="canvas__empty">
+                <h2>Build you infiniate world!</h2>
+              </div>
+            )}
+            {statusMessage && <div className="canvas__status">{statusMessage}</div>}
+          </div>
+        </section>
+      </main>
+
+      <form className="command" onSubmit={handleExtend}>
+        <label className="command__upload">
+          <span className="command__icon" aria-hidden="true">
+            <svg viewBox="0 0 24 24" role="img" focusable="false">
+              <path
+                d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1z"
+                fill="currentColor"
+              />
+            </svg>
+          </span>
           <input
             type="file"
             accept="image/*"
@@ -175,109 +148,20 @@ function App() {
               setError('');
             }}
           />
-          <span>{seedFile ? seedFile.name : 'Choose seed.png'}</span>
+          <span className="command__label">{seedFile ? seedFile.name : 'Attach seed image'}</span>
         </label>
-        <button type="submit" disabled={!seedFile || isLoading}>
-          {isLoading ? 'Extending…' : 'Extend'}
+        <input
+          type="text"
+          name="prompt"
+          className="command__input"
+          placeholder="Describe how the world should expand…"
+          value={prompt}
+          onChange={(event) => setPrompt(event.target.value)}
+        />
+        <button type="submit" className="command__submit" disabled={isLoading || !seedFile}>
+          {isLoading ? 'Generating…' : 'Generate'}
         </button>
       </form>
-
-      <div className="status">{previewMessage}</div>
-
-      <div className="preview">
-        {viewport && (seedPreview?.image || serverSeed?.image) && (
-          <div className="preview__column">
-            <h2>Seed</h2>
-            <div
-              className="preview__window"
-              style={{ width: viewport.displayWidth, height: viewport.displayHeight }}
-            >
-              <img
-                src={(serverSeed || seedPreview).image}
-                alt="Seed"
-                style={{ width: '100%', height: '100%' }}
-              />
-            </div>
-            {viewport && (
-              <dl className="preview__meta">
-                <div>
-                  <dt>Size</dt>
-                  <dd>
-                    {viewport.width} × {viewport.height}
-                  </dd>
-                </div>
-                <div>
-                  <dt>Scale</dt>
-                  <dd>{viewport.scale.toFixed(2)}×</dd>
-                </div>
-              </dl>
-            )}
-          </div>
-        )}
-
-        {viewport && extended && (
-          <div className="preview__column">
-            <h2>Extended Preview</h2>
-            <div
-              className="preview__window"
-              style={{ width: viewport.displayWidth, height: viewport.displayHeight }}
-            >
-              <img
-                src={extended.image}
-                alt="Extended"
-                className="preview__pan"
-                style={{
-                  width: extended.width * viewport.scale,
-                  height: extended.height * viewport.scale,
-                  transform: `translate3d(${horizontalShift}px, ${verticalShift}px, 0)`,
-                }}
-              />
-            </div>
-            <dl className="preview__meta">
-              <div>
-                <dt>Extended width</dt>
-                <dd>{extended.width}px</dd>
-              </div>
-              <div>
-                <dt>Offset</dt>
-                <dd>
-                  {Math.round(offset)} / {Math.round(maxOffset)}
-                </dd>
-              </div>
-            </dl>
-          </div>
-        )}
-      </div>
-
-      {steps.length > 0 && (
-        <section className="steps">
-          <h2>Trace</h2>
-          <p>Each iteration slides the context, calls FAL, extracts the new column, and stitches it onto the seed.</p>
-          <div className="steps__grid">
-            {steps.map((step) => (
-              <article key={step.iteration} className="steps__item">
-                <header>Iteration {step.iteration}</header>
-                <div className="steps__row">
-                  <img src={step.slid} alt={`Iteration ${step.iteration} slid`} />
-                  <span>Slid</span>
-                </div>
-                <div className="steps__row">
-                  <img src={step.fal} alt={`Iteration ${step.iteration} fal result`} />
-                  <span>FAL</span>
-                </div>
-                <div className="steps__row">
-                  <img src={step.column} alt={`Iteration ${step.iteration} new column`} />
-                  <span>Column</span>
-                </div>
-                <div className="steps__row">
-                  <img src={step.extended} alt={`Iteration ${step.iteration} extended`} />
-                  <span>Extended</span>
-                </div>
-              </article>
-            ))}
-          </div>
-        </section>
-      )}
     </div>
   );
 }
