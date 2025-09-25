@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState, useRef, useLayoutEffect } from 'react';
 import './App.css';
 
-function loadImageInfo(dataUrl) {
+function loadImageInfo(src) {
   return new Promise((resolve) => {
     const img = new Image();
     img.onload = () => resolve({ width: img.width, height: img.height });
     img.onerror = () => resolve(null);
-    img.src = dataUrl;
+    img.src = src;
   });
 }
 
@@ -14,7 +14,37 @@ function clamp(value, min, max) {
   return Math.min(Math.max(value, min), max);
 }
 
+function useElementSize(ref) {
+  const [size, setSize] = useState({ width: 0, height: 0 });
+
+  useLayoutEffect(() => {
+    const element = ref.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const updateSize = () => {
+      setSize({ width: element.clientWidth, height: element.clientHeight });
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const observer = new ResizeObserver(() => updateSize());
+      observer.observe(element);
+      return () => observer.disconnect();
+    }
+
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
+
+  return size;
+}
+
 function App() {
+  const isPreviewMode = typeof window !== 'undefined' && window.location.pathname.replace(/\/$/, '') === '/preview';
+
   const [seedFile, setSeedFile] = useState(null);
   const [seedPreview, setSeedPreview] = useState(null);
   const [serverSeed, setServerSeed] = useState(null);
@@ -23,32 +53,11 @@ function App() {
   const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
-  const [extendBottomRow, setExtendBottomRow] = useState(false);
+  const [previewAsset, setPreviewAsset] = useState(null);
   const [pan, setPan] = useState({ x: 0, y: 0 });
+
   const canvasRef = useRef(null);
-  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
-
-  useLayoutEffect(() => {
-    const element = canvasRef.current;
-    if (!element) {
-      return undefined;
-    }
-
-    const updateSize = () => {
-      setCanvasSize({ width: element.clientWidth, height: element.clientHeight });
-    };
-
-    updateSize();
-
-    if (typeof ResizeObserver !== 'undefined') {
-      const resizeObserver = new ResizeObserver(() => updateSize());
-      resizeObserver.observe(element);
-      return () => resizeObserver.disconnect();
-    }
-
-    window.addEventListener('resize', updateSize);
-    return () => window.removeEventListener('resize', updateSize);
-  }, []);
+  const canvasSize = useElementSize(canvasRef);
 
   useEffect(() => {
     if (!seedFile) {
@@ -65,38 +74,58 @@ function App() {
     reader.readAsDataURL(seedFile);
   }, [seedFile]);
 
-  const seedMeta = useMemo(() => {
-    if (serverSeed?.width && serverSeed?.height) {
-      return { width: serverSeed.width, height: serverSeed.height };
+  useEffect(() => {
+    if (!isPreviewMode) {
+      return;
     }
-    if (seedPreview?.width && seedPreview?.height) {
-      return { width: seedPreview.width, height: seedPreview.height };
+
+    let cancelled = false;
+    loadImageInfo('/preview.png').then((info) => {
+      if (!cancelled && info) {
+        setPreviewAsset({ ...info, image: '/preview.png' });
+      }
+    });
+    return () => {
+      cancelled = true;
+    };
+  }, [isPreviewMode]);
+
+  const baseSeed = useMemo(() => {
+    if (isPreviewMode && previewAsset) {
+      return previewAsset;
+    }
+    if (serverSeed) {
+      return serverSeed;
+    }
+    if (seedPreview) {
+      return seedPreview;
     }
     return null;
-  }, [seedPreview, serverSeed]);
+  }, [isPreviewMode, previewAsset, seedPreview, serverSeed]);
 
+  const activeImageData = useMemo(() => {
+    if (extended) {
+      return extended;
+    }
+    return baseSeed;
+  }, [extended, baseSeed]);
 
   const imageMeta = useMemo(() => {
-    if (extended?.width && extended?.height) {
-      return { width: extended.width, height: extended.height };
-    }
-    if (serverSeed?.width && serverSeed?.height) {
-      return { width: serverSeed.width, height: serverSeed.height };
-    }
-    if (seedPreview?.width && seedPreview?.height) {
-      return { width: seedPreview.width, height: seedPreview.height };
+    if (activeImageData?.width && activeImageData?.height) {
+      return { width: activeImageData.width, height: activeImageData.height };
     }
     return { width: 0, height: 0 };
-  }, [extended, seedPreview, serverSeed]);
+  }, [activeImageData]);
 
   const canvasWidth = canvasSize.width || 0;
   const canvasHeight = canvasSize.height || 0;
-  const seedWidth = seedMeta?.width || imageMeta.width || 1;
-  const scaleRaw = seedWidth > 0 && canvasWidth > 0 ? canvasWidth / seedWidth : 1;
-  const scale = Number.isFinite(scaleRaw) && scaleRaw > 0 ? scaleRaw : 1;
 
-  const viewportWidth = canvasWidth / scale || seedWidth;
-  const viewportHeight = canvasHeight / scale || seedMeta?.height || imageMeta.height;
+  const seedWidth = baseSeed?.width || imageMeta.width || 1;
+  const seedHeight = baseSeed?.height || imageMeta.height || 1;
+  const scale = seedWidth > 0 && canvasWidth > 0 ? canvasWidth / seedWidth : 1;
+
+  const viewportWidth = canvasWidth / (scale || 1);
+  const viewportHeight = canvasHeight / (scale || 1);
 
   const maxOffsetX = imageMeta.width > 0 ? Math.max(0, imageMeta.width - viewportWidth) : 0;
   const maxOffsetY = imageMeta.height > 0 ? Math.max(0, imageMeta.height - viewportHeight) : 0;
@@ -112,16 +141,15 @@ function App() {
   }, [maxOffsetX, maxOffsetY]);
 
   useEffect(() => {
-    if (!extended) {
+    if (extended) {
+      setPan((previous) => ({
+        x: clamp((extended.seedOffset ?? previous.x ?? 0), 0, maxOffsetX),
+        y: clamp(previous.y, 0, maxOffsetY),
+      }));
+    } else {
       setPan({ x: 0, y: 0 });
-      return;
     }
-
-    setPan((previous) => ({
-      x: clamp(extended.seedOffset ?? previous.x ?? 0, 0, maxOffsetX),
-      y: clamp(previous.y, 0, maxOffsetY),
-    }));
-  }, [extended, maxOffsetX, maxOffsetY]);
+  }, [extended, maxOffsetX, maxOffsetY, isPreviewMode, previewAsset]);
 
   const canvasImage = useMemo(() => {
     if (extended?.image) {
@@ -133,8 +161,11 @@ function App() {
     if (seedPreview?.image) {
       return seedPreview.image;
     }
+    if (previewAsset?.image) {
+      return previewAsset.image;
+    }
     return null;
-  }, [extended, serverSeed, seedPreview]);
+  }, [extended, previewAsset, seedPreview, serverSeed]);
 
   const statusMessage = useMemo(() => {
     if (isLoading) {
@@ -146,11 +177,14 @@ function App() {
     if (!canvasImage) {
       return null;
     }
+    if (isPreviewMode) {
+      return 'Use arrow keys to navigate the preview.';
+    }
     if (extended) {
       return 'Use arrow keys to explore the extended world.';
     }
     return 'Press Generate whenever you are ready. Arrow keys pan once generated.';
-  }, [canvasImage, error, extended, isLoading]);
+  }, [canvasImage, error, extended, isLoading, isPreviewMode]);
 
   const stepX = viewportWidth > 0 ? viewportWidth / 6 : 0;
   const stepY = viewportHeight > 0 ? viewportHeight / 6 : 0;
@@ -199,6 +233,10 @@ function App() {
     event.preventDefault();
     setError('');
 
+    if (isPreviewMode) {
+      return;
+    }
+
     if (!seedFile) {
       setError('Attach a seed tile to extend the scene.');
       return;
@@ -210,8 +248,6 @@ function App() {
     if (prompt.trim()) {
       formData.append('prompt', prompt.trim());
     }
-
-    formData.append('extendAllDirections', extendBottomRow ? 'true' : 'false');
 
     try {
       setIsLoading(true);
@@ -267,50 +303,44 @@ function App() {
         </section>
       </main>
 
-      <form className="command" onSubmit={handleExtend}>
-        <label className="command__upload">
-          <span className="command__icon" aria-hidden="true">
-            <svg viewBox="0 0 24 24" role="img" focusable="false">
-              <path
-                d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1z"
-                fill="currentColor"
-              />
-            </svg>
-          </span>
+      {!isPreviewMode && (
+        <form className="command" onSubmit={handleExtend}>
+          <label className="command__upload">
+            <span className="command__icon" aria-hidden="true">
+              <svg viewBox="0 0 24 24" role="img" focusable="false">
+                <path
+                  d="M12 4a1 1 0 0 1 1 1v6h6a1 1 0 1 1 0 2h-6v6a1 1 0 1 1-2 0v-6H5a1 1 0 1 1 0-2h6V5a1 1 0 0 1 1-1z"
+                  fill="currentColor"
+                />
+              </svg>
+            </span>
+            <input
+              type="file"
+              accept="image/*"
+              onChange={(event) => {
+                const [file] = event.target.files || [];
+                setSeedFile(file || null);
+                setServerSeed(null);
+                setExtended(null);
+                setSteps([]);
+                setError('');
+              }}
+            />
+            <span className="command__label">{seedFile ? seedFile.name : 'Attach seed image'}</span>
+          </label>
           <input
-            type="file"
-            accept="image/*"
-            onChange={(event) => {
-              const [file] = event.target.files || [];
-              setSeedFile(file || null);
-              setServerSeed(null);
-              setExtended(null);
-              setSteps([]);
-              setError('');
-            }}
+            type="text"
+            name="prompt"
+            className="command__input"
+            placeholder="Describe how the world should expand…"
+            value={prompt}
+            onChange={(event) => setPrompt(event.target.value)}
           />
-          <span className="command__label">{seedFile ? seedFile.name : 'Attach seed image'}</span>
-        </label>
-        <input
-          type="text"
-          name="prompt"
-          className="command__input"
-          placeholder="Describe how the world should expand…"
-          value={prompt}
-          onChange={(event) => setPrompt(event.target.value)}
-        />
-        <label className="command__toggle">
-          <input
-            type="checkbox"
-            checked={extendBottomRow}
-            onChange={(event) => setExtendBottomRow(event.target.checked)}
-          />
-          <span>Extend bottom row</span>
-        </label>
-        <button type="submit" className="command__submit" disabled={isLoading || !seedFile}>
-          {isLoading ? 'Generating…' : 'Generate'}
-        </button>
-      </form>
+          <button type="submit" className="command__submit" disabled={isLoading || !seedFile}>
+            {isLoading ? 'Generating…' : 'Generate'}
+          </button>
+        </form>
+      )}
     </div>
   );
 }
