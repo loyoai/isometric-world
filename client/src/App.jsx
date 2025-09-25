@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState, useRef, useLayoutEffect } from 'react';
 import './App.css';
 
 function loadImageInfo(dataUrl) {
@@ -8,6 +8,10 @@ function loadImageInfo(dataUrl) {
     img.onerror = () => resolve(null);
     img.src = dataUrl;
   });
+}
+
+function clamp(value, min, max) {
+  return Math.min(Math.max(value, min), max);
 }
 
 function App() {
@@ -20,6 +24,31 @@ function App() {
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
   const [extendBottomRow, setExtendBottomRow] = useState(false);
+  const [pan, setPan] = useState({ x: 0, y: 0 });
+  const canvasRef = useRef(null);
+  const [canvasSize, setCanvasSize] = useState({ width: 0, height: 0 });
+
+  useLayoutEffect(() => {
+    const element = canvasRef.current;
+    if (!element) {
+      return undefined;
+    }
+
+    const updateSize = () => {
+      setCanvasSize({ width: element.clientWidth, height: element.clientHeight });
+    };
+
+    updateSize();
+
+    if (typeof ResizeObserver !== 'undefined') {
+      const resizeObserver = new ResizeObserver(() => updateSize());
+      resizeObserver.observe(element);
+      return () => resizeObserver.disconnect();
+    }
+
+    window.addEventListener('resize', updateSize);
+    return () => window.removeEventListener('resize', updateSize);
+  }, []);
 
   useEffect(() => {
     if (!seedFile) {
@@ -35,6 +64,64 @@ function App() {
     };
     reader.readAsDataURL(seedFile);
   }, [seedFile]);
+
+  const seedMeta = useMemo(() => {
+    if (serverSeed?.width && serverSeed?.height) {
+      return { width: serverSeed.width, height: serverSeed.height };
+    }
+    if (seedPreview?.width && seedPreview?.height) {
+      return { width: seedPreview.width, height: seedPreview.height };
+    }
+    return null;
+  }, [seedPreview, serverSeed]);
+
+
+  const imageMeta = useMemo(() => {
+    if (extended?.width && extended?.height) {
+      return { width: extended.width, height: extended.height };
+    }
+    if (serverSeed?.width && serverSeed?.height) {
+      return { width: serverSeed.width, height: serverSeed.height };
+    }
+    if (seedPreview?.width && seedPreview?.height) {
+      return { width: seedPreview.width, height: seedPreview.height };
+    }
+    return { width: 0, height: 0 };
+  }, [extended, seedPreview, serverSeed]);
+
+  const canvasWidth = canvasSize.width || 0;
+  const canvasHeight = canvasSize.height || 0;
+  const seedWidth = seedMeta?.width || imageMeta.width || 1;
+  const scaleRaw = seedWidth > 0 && canvasWidth > 0 ? canvasWidth / seedWidth : 1;
+  const scale = Number.isFinite(scaleRaw) && scaleRaw > 0 ? scaleRaw : 1;
+
+  const viewportWidth = canvasWidth / scale || seedWidth;
+  const viewportHeight = canvasHeight / scale || seedMeta?.height || imageMeta.height;
+
+  const maxOffsetX = imageMeta.width > 0 ? Math.max(0, imageMeta.width - viewportWidth) : 0;
+  const maxOffsetY = imageMeta.height > 0 ? Math.max(0, imageMeta.height - viewportHeight) : 0;
+
+  const displayWidth = imageMeta.width * scale;
+  const displayHeight = imageMeta.height * scale;
+
+  useEffect(() => {
+    setPan((previous) => ({
+      x: clamp(previous.x, 0, maxOffsetX),
+      y: clamp(previous.y, 0, maxOffsetY),
+    }));
+  }, [maxOffsetX, maxOffsetY]);
+
+  useEffect(() => {
+    if (!extended) {
+      setPan({ x: 0, y: 0 });
+      return;
+    }
+
+    setPan((previous) => ({
+      x: clamp(extended.seedOffset ?? previous.x ?? 0, 0, maxOffsetX),
+      y: clamp(previous.y, 0, maxOffsetY),
+    }));
+  }, [extended, maxOffsetX, maxOffsetY]);
 
   const canvasImage = useMemo(() => {
     if (extended?.image) {
@@ -60,10 +147,53 @@ function App() {
       return null;
     }
     if (extended) {
-      return 'Use your new extended seed to inspire the next world.';
+      return 'Use arrow keys to explore the extended world.';
     }
-    return 'Press Generate whenever you are ready.';
+    return 'Press Generate whenever you are ready. Arrow keys pan once generated.';
   }, [canvasImage, error, extended, isLoading]);
+
+  const stepX = viewportWidth > 0 ? viewportWidth / 6 : 0;
+  const stepY = viewportHeight > 0 ? viewportHeight / 6 : 0;
+
+  useEffect(() => {
+    if (!canvasImage) {
+      return () => {};
+    }
+
+    function handleKeyDown(event) {
+      if (!['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+        return;
+      }
+
+      event.preventDefault();
+
+      setPan((current) => {
+        let nextX = current.x;
+        let nextY = current.y;
+
+        if (event.key === 'ArrowLeft') {
+          nextX = clamp(current.x - stepX, 0, maxOffsetX);
+        }
+        if (event.key === 'ArrowRight') {
+          nextX = clamp(current.x + stepX, 0, maxOffsetX);
+        }
+        if (event.key === 'ArrowUp') {
+          nextY = clamp(current.y - stepY, 0, maxOffsetY);
+        }
+        if (event.key === 'ArrowDown') {
+          nextY = clamp(current.y + stepY, 0, maxOffsetY);
+        }
+
+        if (nextX === current.x && nextY === current.y) {
+          return current;
+        }
+        return { x: nextX, y: nextY };
+      });
+    }
+
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [canvasImage, maxOffsetX, maxOffsetY, stepX, stepY]);
 
   async function handleExtend(event) {
     event.preventDefault();
@@ -106,6 +236,12 @@ function App() {
     }
   }
 
+  const transformStyle = {
+    width: displayWidth || '100%',
+    height: displayHeight || '100%',
+    transform: `translate3d(${-pan.x * scale || 0}px, ${-pan.y * scale || 0}px, 0)`,
+  };
+
   return (
     <div className="app">
       <div className="app__background" aria-hidden="true" />
@@ -115,10 +251,12 @@ function App() {
 
       <main className="app__main">
         <section className="canvas" aria-label="Isometric preview">
-          <div className={canvasImage ? 'canvas__surface has-image' : 'canvas__surface'}>
+          <div className={canvasImage ? 'canvas__surface has-image' : 'canvas__surface'} ref={canvasRef}>
             <div className="canvas__grid" aria-hidden="true" />
             {canvasImage ? (
-              <img src={canvasImage} alt="Isometric preview" className="canvas__image" />
+              <div className="canvas__content" style={transformStyle}>
+                <img src={canvasImage} alt="Isometric preview" className="canvas__image" />
+              </div>
             ) : (
               <div className="canvas__empty">
                 <h2>Build you infiniate world!</h2>
