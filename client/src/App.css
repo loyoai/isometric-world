@@ -139,6 +139,10 @@ body {
   cursor: grab;
 }
 
+.canvas__surface.has-image .canvas__content.is-grabbing {
+  cursor: grabbing;
+}
+
 .canvas__image {
   display: block;
   width: 100%;
@@ -233,7 +237,7 @@ body {
 .command__icon {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
+  justify-content: flex-start;
   width: 32px;
   height: 32px;
   border-radius: 10px;
@@ -251,6 +255,33 @@ body {
 .command__label {
   overflow: hidden;
   text-overflow: ellipsis;
+}
+
+.command__clear {
+  margin-left: 8px;
+  border: none;
+  width: 28px;
+  height: 28px;
+  border-radius: 999px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: rgba(20, 24, 36, 0.8);
+  color: rgba(210, 220, 255, 0.85);
+  font-size: 18px;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 160ms ease, color 160ms ease, transform 120ms ease;
+}
+
+.command__clear:hover {
+  background: rgba(44, 56, 90, 0.9);
+  color: #fff;
+  transform: translateY(-1px);
+}
+
+.command__clear:active {
+  transform: translateY(0);
 }
 
 .command__input {
@@ -274,6 +305,50 @@ body {
   outline: none;
   border-color: rgba(140, 168, 255, 0.65);
   box-shadow: 0 0 0 3px var(--accent-ring);
+}
+
+.command__input[disabled] {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.command__option {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  padding: 0 18px;
+  height: 52px;
+  border-radius: 14px;
+  border: 1px solid rgba(124, 145, 255, 0.2);
+  background: rgba(14, 18, 28, 0.6);
+  color: rgba(210, 220, 255, 0.86);
+  font-size: 0.95rem;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color 160ms ease, background 160ms ease, color 160ms ease;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.command__option:hover {
+  border-color: rgba(162, 182, 255, 0.55);
+  background: rgba(28, 36, 62, 0.65);
+  color: rgba(236, 238, 255, 0.95);
+}
+
+.command__option input {
+  width: 18px;
+  height: 18px;
+  accent-color: rgba(162, 182, 255, 0.85);
+}
+
+.command__hint {
+  font-size: 0.8rem;
+  color: rgba(160, 175, 220, 0.7);
+  margin: 6px 0 0;
+  flex-basis: 100%;
+  align-self: flex-start;
 }
 
 
@@ -337,7 +412,8 @@ body {
   }
 
   .command__upload,
-  .command__submit {
+  .command__submit,
+  .command__option {
     width: 100%;
     max-width: none;
   }

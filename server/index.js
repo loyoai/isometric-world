@@ -18,6 +18,10 @@ const OUTPUT_FORMAT = 'jpeg';
 const GUIDANCE_SCALE = 2.5;
 const ITERATIONS = 3;
 
+const TEXT_TO_IMAGE_MODEL = 'fal-ai/flux-pro/v1.1-ultra';
+const DEFAULT_TEXT_PROMPT =
+  'An isometric pixel art scene in top-down RPG style, showing a close-up Paris café. The frame is filled with outdoor tables, umbrellas, cobblestone streets, flower boxes, bicycles, and waiters serving customers. No sky, only terrain and objects. Retro 16-bit pixel game aesthetic, charming and colorful, shadows cast at 45 degrees.';
+
 if (!process.env.FAL_KEY) {
   console.warn('FAL_KEY is not set. API calls will fail until it is configured.');
 }
@@ -450,6 +454,40 @@ async function downloadImageBuffer(url) {
   return Buffer.from(arrayBuffer);
 }
 
+async function generateSeedFromPrompt(promptText) {
+  if (!process.env.FAL_KEY) {
+    throw new Error('FAL_KEY is not configured');
+  }
+
+  const result = await fal.subscribe(TEXT_TO_IMAGE_MODEL, {
+    input: {
+      prompt: promptText,
+      aspect_ratio: '1:1',
+      num_images: 1,
+      enable_safety_checker: true,
+      output_format: 'png',
+      sync_mode: true,
+    },
+    logs: true,
+  });
+
+  const images = result?.data?.images || result?.images || [];
+  if (!images.length || !images[0].url) {
+    throw new Error('FAL text-to-image returned no image');
+  }
+
+  const buffer = await downloadImageBuffer(images[0].url);
+  const pngBuffer = await sharp(buffer).toColourspace('srgb').png().toBuffer();
+  const metadata = await sharp(pngBuffer).metadata();
+
+  return {
+    buffer: pngBuffer,
+    width: metadata.width || 0,
+    height: metadata.height || 0,
+    seed: result?.data?.seed ?? result?.seed ?? null,
+  };
+}
+
 async function callFal(slidBuffer, expectedSize) {
   if (!process.env.FAL_KEY) {
     throw new Error('FAL_KEY is not configured');
@@ -571,6 +609,27 @@ function toDataUrl(buffer, mime = 'image/png') {
   return `data:${mime};base64,${buffer.toString('base64')}`;
 }
 
+app.post('/api/generate', async (req, res) => {
+  try {
+    const promptText = typeof req.body?.prompt === 'string' && req.body.prompt.trim()
+      ? req.body.prompt.trim()
+      : DEFAULT_TEXT_PROMPT;
+
+    const seedResult = await generateSeedFromPrompt(promptText);
+
+    res.json({
+      prompt: promptText,
+      width: seedResult.width,
+      height: seedResult.height,
+      seed: seedResult.seed,
+      image: toDataUrl(seedResult.buffer),
+    });
+  } catch (error) {
+    console.error('Seed generation failed:', error);
+    res.status(500).json({ error: error.message || 'Failed to generate seed image' });
+  }
+});
+
 app.post('/api/extend', upload.single('seed'), async (req, res) => {
   try {
     if (!req.file) {
@@ -601,10 +660,6 @@ app.post('/api/extend', upload.single('seed'), async (req, res) => {
         iteration: step.iteration,
         direction: step.direction,
         stage: step.stage || null,
-        slid: step.slid ? toDataUrl(step.slid) : null,
-        fal: step.fal ? toDataUrl(step.fal) : null,
-        column: step.column ? toDataUrl(step.column) : null,
-        extended: step.extended ? toDataUrl(step.extended) : null,
       })),
     });
   } catch (error) {
