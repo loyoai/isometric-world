@@ -149,6 +149,91 @@ async function extractRightThird(buffer) {
     .toBuffer();
 }
 
+
+async function slideImageUp(buffer) {
+  const image = sharp(buffer);
+  const metadata = await image.metadata();
+  const { width, height } = metadata;
+
+  if (!width || !height) {
+    throw new Error('Invalid image dimensions');
+  }
+
+  const tileHeight = Math.floor(height / 3);
+  const keepHeight = height - tileHeight;
+
+  if (keepHeight <= 0) {
+    throw new Error('Image height is too small to slide up');
+  }
+
+  const topPortion = await image
+    .clone()
+    .extract({ left: 0, top: 0, width, height: keepHeight })
+    .png()
+    .toBuffer();
+
+  return createWhiteBackground(width, height)
+    .composite([{ input: topPortion, left: 0, top: 0 }])
+    .png()
+    .toBuffer();
+}
+
+async function extractBottomThird(buffer) {
+  const image = sharp(buffer);
+  const metadata = await image.metadata();
+  const { width, height } = metadata;
+
+  if (!width || !height) {
+    throw new Error('Invalid image dimensions');
+  }
+
+  const row2End = Math.floor((2 * height) / 3);
+  const bandHeight = height - row2End;
+
+  if (bandHeight <= 0) {
+    throw new Error('Failed to compute bottom band height');
+  }
+
+  return image
+    .extract({ left: 0, top: row2End, width, height: bandHeight })
+    .png()
+    .toBuffer();
+}
+
+async function compositeBottomSegment(baseBuffer, segmentBuffer, left, top) {
+  const baseImage = sharp(baseBuffer);
+  const baseMeta = await baseImage.metadata();
+  const segmentMeta = await sharp(segmentBuffer).metadata();
+
+  if (!baseMeta.width || !baseMeta.height) {
+    throw new Error('Invalid base image dimensions');
+  }
+  if (!segmentMeta.width || !segmentMeta.height) {
+    return baseBuffer;
+  }
+
+  const maxWidth = baseMeta.width;
+  let effectiveLeft = Math.max(0, Math.min(left, Math.max(0, maxWidth - segmentMeta.width)));
+  let segment = segmentBuffer;
+  let segmentWidth = segmentMeta.width;
+
+  if (effectiveLeft + segmentWidth > maxWidth) {
+    const clampedWidth = Math.max(0, maxWidth - effectiveLeft);
+    if (clampedWidth === 0) {
+      return baseBuffer;
+    }
+    segment = await sharp(segmentBuffer)
+      .extract({ left: 0, top: 0, width: clampedWidth, height: segmentMeta.height })
+      .png()
+      .toBuffer();
+    segmentWidth = clampedWidth;
+  }
+
+  return sharp(baseBuffer)
+    .composite([{ input: segment, left: effectiveLeft, top }])
+    .png()
+    .toBuffer();
+}
 async function extractLeftThird(buffer) {
   const image = sharp(buffer);
   const metadata = await image.metadata();
@@ -168,6 +253,103 @@ async function extractLeftThird(buffer) {
     .extract({ left: 0, top: 0, width: leftWidth, height })
     .png()
     .toBuffer();
+}
+
+async function extractBottomTile(columnBuffer, tileHeight) {
+  const image = sharp(columnBuffer);
+  const metadata = await image.metadata();
+  const { width, height } = metadata;
+
+  if (!width || !height) {
+    throw new Error('Invalid column dimensions');
+  }
+
+  const bandHeight = Math.min(tileHeight, height);
+  const top = Math.max(0, height - bandHeight);
+
+  return image
+    .extract({ left: 0, top, width, height: bandHeight })
+    .png()
+    .toBuffer();
+}
+
+async function extendBottomRow(baseBuffer, seedMeta, steps) {
+  const baseMeta = await sharp(baseBuffer).metadata();
+  const seedWidth = seedMeta.width || 0;
+  const seedHeight = seedMeta.height || 0;
+  const finalWidth = baseMeta.width || 0;
+  const finalHeight = baseMeta.height || 0;
+
+  const tileWidth = Math.floor(seedWidth / 3);
+  const tileHeight = Math.floor(seedHeight / 3);
+
+  if (!finalWidth || !finalHeight || tileWidth <= 0 || tileHeight <= 0) {
+    return baseBuffer;
+  }
+
+  const blockWidth = Math.min(tileWidth * 3, finalWidth);
+  if (blockWidth <= 0) {
+    return baseBuffer;
+  }
+
+  let workingBuffer = await createWhiteBackground(finalWidth, finalHeight + tileHeight)
+    .composite([{ input: baseBuffer, left: 0, top: 0 }])
+    .png()
+    .toBuffer();
+
+  let context = await sharp(workingBuffer)
+    .extract({ left: 0, top: 0, width: blockWidth, height: finalHeight })
+    .png()
+    .toBuffer();
+
+  const contextMeta = await sharp(context).metadata();
+  const verticalExpected = { width: contextMeta.width || 0, height: contextMeta.height || 0 };
+
+  const slidUp = await slideImageUp(context);
+  const falVertical = await callFal(slidUp, verticalExpected);
+  const bottomBand = await extractBottomThird(falVertical);
+
+  workingBuffer = await compositeBottomSegment(workingBuffer, bottomBand, 0, finalHeight);
+
+  steps.push({
+    iteration: steps.length + 1,
+    direction: 'down',
+    stage: 'vertical',
+    column: bottomBand,
+  });
+
+  context = falVertical;
+  const bottomBandMeta = await sharp(bottomBand).metadata();
+  let currentOffset = Math.min(bottomBandMeta.width || blockWidth, finalWidth);
+
+  while (currentOffset < finalWidth) {
+    const slid = await slideImageLeft(context);
+    const slidMeta = await sharp(slid).metadata();
+    const horizontalExpected = { width: slidMeta.width || 0, height: slidMeta.height || 0 };
+    const falHorizontal = await callFal(slid, horizontalExpected);
+    const newColumn = await extractRightThird(falHorizontal);
+    const bottomTile = await extractBottomTile(newColumn, tileHeight);
+    const bottomTileMeta = await sharp(bottomTile).metadata();
+
+    workingBuffer = await compositeBottomSegment(workingBuffer, bottomTile, currentOffset, finalHeight);
+
+    steps.push({
+      iteration: steps.length + 1,
+      direction: 'down',
+      stage: 'horizontal',
+      column: bottomTile,
+    });
+
+    context = falHorizontal;
+    const availableWidth = Math.max(0, finalWidth - currentOffset);
+    const increment = Math.min(bottomTileMeta.width || tileWidth, availableWidth);
+    if (!increment) {
+      break;
+    }
+    currentOffset += increment;
+  }
+
+  return workingBuffer;
 }
 
 async function appendColumn(baseBuffer, columnBuffer) {
@@ -316,7 +498,7 @@ async function callFal(slidBuffer, expectedSize) {
   return image.png().toBuffer();
 }
 
-async function extendSeed(buffer, iterations = ITERATIONS) {
+async function extendSeed(buffer, iterations = ITERATIONS, extendBottom = false) {
   const seedBuffer = await ensureRgbPng(buffer);
   const steps = [];
 
@@ -373,6 +555,10 @@ async function extendSeed(buffer, iterations = ITERATIONS) {
   }
 
   const leftMeta = await sharp(leftAccumulated).metadata();
+  if (extendBottom) {
+    finalBuffer = await extendBottomRow(finalBuffer, seedMeta, steps);
+  }
+
   const leftExtensionWidth = Math.max(
     0,
     (leftMeta.width || 0) - (seedMeta.width || 0),
@@ -393,7 +579,8 @@ app.post('/api/extend', upload.single('seed'), async (req, res) => {
     }
 
     const iterations = Number.parseInt(req.body.iterations, 10) || ITERATIONS;
-    const result = await extendSeed(req.file.buffer, iterations);
+    const extendAllDirections = req.body.extendAllDirections === 'true';
+    const result = await extendSeed(req.file.buffer, iterations, extendAllDirections);
 
     const seedMeta = await sharp(result.seed).metadata();
     const extendedMeta = await sharp(result.extended).metadata();
@@ -413,10 +600,11 @@ app.post('/api/extend', upload.single('seed'), async (req, res) => {
       steps: result.steps.map((step) => ({
         iteration: step.iteration,
         direction: step.direction,
-        slid: toDataUrl(step.slid),
-        fal: toDataUrl(step.fal),
-        column: toDataUrl(step.column),
-        extended: toDataUrl(step.extended),
+        stage: step.stage || null,
+        slid: step.slid ? toDataUrl(step.slid) : null,
+        fal: step.fal ? toDataUrl(step.fal) : null,
+        column: step.column ? toDataUrl(step.column) : null,
+        extended: step.extended ? toDataUrl(step.extended) : null,
       })),
     });
   } catch (error) {

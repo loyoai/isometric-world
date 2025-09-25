@@ -19,6 +19,7 @@ function App() {
   const [prompt, setPrompt] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [error, setError] = useState('');
+  const [extendBottomRow, setExtendBottomRow] = useState(false);
 
   useEffect(() => {
     if (!seedFile) {
@@ -79,6 +80,8 @@ function App() {
     if (prompt.trim()) {
       formData.append('prompt', prompt.trim());
     }
+
+    formData.append('extendAllDirections', extendBottomRow ? 'true' : 'false');
 
     try {
       setIsLoading(true);
@@ -158,6 +161,14 @@ function App() {
           value={prompt}
           onChange={(event) => setPrompt(event.target.value)}
         />
+        <label className="command__toggle">
+          <input
+            type="checkbox"
+            checked={extendBottomRow}
+            onChange={(event) => setExtendBottomRow(event.target.checked)}
+          />
+          <span>Extend bottom row</span>
+        </label>
         <button type="submit" className="command__submit" disabled={isLoading || !seedFile}>
           {isLoading ? 'Generating…' : 'Generate'}
         </button>
