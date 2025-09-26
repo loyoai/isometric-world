@@ -62,13 +62,15 @@ function App() {
   const [pan, setPan] = useState({ x: 0, y: 0 });
   const [isDragging, setIsDragging] = useState(false);
   const [seedOrigin, setSeedOrigin] = useState(null);
-  const [extendAllDirections, setExtendAllDirections] = useState(false);
+  const [visualProgress, setVisualProgress] = useState(0);
 
   const canvasRef = useRef(null);
   const fileInputRef = useRef(null);
   const pointerRef = useRef({ active: false, origin: { x: 0, y: 0 }, panStart: { x: 0, y: 0 } });
   const lastImageKeyRef = useRef(null);
   const loggedStepCountRef = useRef(0);
+  const loadingStartTimeRef = useRef(null);
+  const loadingTimerRef = useRef(null);
 
   const canvasSize = useElementSize(canvasRef);
 
@@ -435,7 +437,6 @@ function App() {
     setIsDragging(false);
     setPan({ x: 0, y: 0 });
     setPrompt(DEFAULT_PROMPT);
-    setExtendAllDirections(false);
   };
 
   async function handleExtend(event) {
@@ -492,8 +493,6 @@ function App() {
         formData.append('prompt', prompt.trim());
       }
 
-      formData.append('extendAllDirections', extendAllDirections ? 'true' : 'false');
-
       const response = await fetch('/api/extend', {
         method: 'POST',
         body: formData,
@@ -541,12 +540,63 @@ function App() {
     }
   }
 
-  const progressPercent = totalSegments > 0 ? Math.min(100, Math.round((steps.length / totalSegments) * 100)) : 0;
-  const buttonLabel = isLoading
-    ? totalSegments > 0
-      ? `Generating… ${progressPercent}%`
-      : 'Generating…'
-    : 'Generate';
+  const actualProgress = totalSegments > 0 ? Math.min(100, Math.round((steps.length / totalSegments) * 100)) : 0;
+
+  useEffect(() => {
+    if (!isLoading) {
+      loadingStartTimeRef.current = null;
+      setVisualProgress(0);
+      if (loadingTimerRef.current) {
+        clearInterval(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+      return undefined;
+    }
+
+    loadingStartTimeRef.current = Date.now();
+    setVisualProgress(0);
+
+    if (loadingTimerRef.current) {
+      clearInterval(loadingTimerRef.current);
+    }
+
+    loadingTimerRef.current = setInterval(() => {
+      if (!loadingStartTimeRef.current) {
+        return;
+      }
+      const elapsed = Date.now() - loadingStartTimeRef.current;
+      const pseudoTarget = Math.min(99, Math.ceil((elapsed / 240000) * 99));
+      setVisualProgress((previous) => {
+        if (pseudoTarget <= previous) {
+          return previous;
+        }
+        return pseudoTarget;
+      });
+    }, 500);
+
+    return () => {
+      if (loadingTimerRef.current) {
+        clearInterval(loadingTimerRef.current);
+        loadingTimerRef.current = null;
+      }
+    };
+  }, [isLoading]);
+
+  useEffect(() => {
+    if (!isLoading || actualProgress <= 0) {
+      return;
+    }
+    setVisualProgress((previous) => {
+      const target = Math.min(actualProgress, 99);
+      if (target <= previous) {
+        return previous;
+      }
+      return target;
+    });
+  }, [actualProgress, isLoading]);
+
+  const displayProgress = isLoading ? Math.max(visualProgress, Math.min(actualProgress, 99)) : 0;
+  const buttonLabel = isLoading ? `Generating… ${Math.max(0, Math.floor(displayProgress))}%` : 'Generate';
 
   const isPromptLocked = seedOrigin === 'upload';
 
@@ -643,17 +693,10 @@ function App() {
             aria-disabled={isPromptLocked}
             title={isPromptLocked ? 'Prompt editing is disabled while using an uploaded seed. Remove the seed to edit.' : undefined}
           />
-          <label className="command__option">
-            <input
-              type="checkbox"
-              checked={extendAllDirections}
-              onChange={(event) => setExtendAllDirections(event.target.checked)}
-            />
-            <span>Extend from all sides</span>
-          </label>
           {isPromptLocked && <div className="command__hint">Remove the uploaded seed to edit the prompt.</div>}
           <button type="submit" className="command__submit" disabled={isLoading}>
-            {buttonLabel}
+            {isLoading && <span className="command__spinner" aria-hidden="true" />}
+            <span className="command__submitText">{buttonLabel}</span>
           </button>
         </form>
       )}

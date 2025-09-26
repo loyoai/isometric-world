@@ -367,6 +367,7 @@ body {
   cursor: pointer;
   box-shadow: 0 12px 30px rgba(0, 0, 0, 0.45);
   transition: transform 140ms ease, box-shadow 160ms ease, color 160ms ease;
+  gap: 12px;
 }
 
 .command__submit:hover:enabled {
@@ -376,9 +377,30 @@ body {
 }
 
 .command__submit:disabled {
-  opacity: 0.5;
+  opacity: 0.75;
   cursor: not-allowed;
   box-shadow: none;
+}
+
+.command__submitText {
+  display: inline-flex;
+  align-items: center;
+  line-height: 1;
+}
+
+.command__spinner {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  border: 2px solid rgba(244, 245, 255, 0.32);
+  border-top-color: rgba(244, 245, 255, 0.85);
+  animation: command-spinner-spin 0.9s linear infinite;
+}
+
+@keyframes command-spinner-spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 @media (max-height: 720px) {
